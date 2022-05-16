@@ -1,0 +1,258 @@
+OPTION STRICT
+OPTION DEFINT
+
+LOAD "PRG2:EAR_CLIP_LIB",0:USE 2
+
+ACLS
+
+' data buffer
+VAR D%[0] ' 32 bits..
+
+' memory cursor
+VAR C%=0 ' 8 bits..
+' C% will address each D% element four times.
+' this is normal.
+
+' load ST-NICCC data
+LOAD "DAT:NICCC",D%,0
+
+' graphics palette
+' (in &hAARRGGBB)
+VAR PAL%[16]
+
+' Vertex pool and index list
+VAR VTX_X%[256],VTX_Y%[256]
+VAR VTX_I%[16]
+
+' Triangle list
+VAR TRI%[0]
+
+' ' Color indicators
+' VAR I%
+' DEF FRESH_COLOR I%,C%
+'  SPCOLOR I%,C%
+'  SPOFS I%,,224
+'  SPANIM I%,"C+",-60,&hCCFFFFFF
+'  SPANIM I%,"XY+",-60,0,8
+' END
+' FOR I%=0 TO 15
+'  PAL%[I%]=-1
+'  SPSET I%,241
+'  SPOFS I%,I%<<4,232
+' NEXT I%
+
+VAR FRAME_C%=0 ' <- frame counter
+VAR MORE_FRAMES=TRUE ' <- if there are more frames after this
+' VAR FRAME_CUR%[0] ' <- where the cursor was on this frame
+
+' move view of graphics page to only lower half
+' also center it for free!
+GOFS -72,256-20 ' (graphics page is 512x512)
+
+' the silence was deafening
+BGMPLAY 0,41
+
+WHILE 1
+ ' KEY 1,STR$(FRAME_C%) ' <- debug output of what frame we're on
+ ' PUSH FRAME_CUR%,C% ' <- save where mem cursor was on this frame
+ 
+ GCLIP 1,0,0,255,199 ' <- limit drawing to the right frame size
+ MORE_FRAMES=FRAME() ' <- draw frame!
+ GCLIP 1 ' <- reset drawing limits
+ 
+ INC FRAME_C%
+ VSYNC
+ 
+ ' copy new frame to visible part of graphics page
+ GCOPY 0,0,255,199,0,256,TRUE
+ 
+ ' if there are no more frames after this one, stop
+ IF !MORE_FRAMES THEN:BREAK
+WEND
+
+' ' Funny go backwards code
+' ' (didn't save palette data, so it'll look bad)
+' WHILE LEN(FRAME_CUR%)
+'  ' KEY 1,STR$(FRAME_C%)
+'  GCLIP 1,0,0,255,199
+'  C%=POP(FRAME_CUR%)
+'  EAT FRAME()
+'  GCLIP 1
+'  GCOPY 0,0,255,199,0,256,TRUE
+'  ' INC FRAME_C%
+'  VSYNC 3
+' WEND
+
+' ok ok ok when it ends also stop the music
+BGMSTOP 0,1
+WAIT 60
+
+DEF GET_NIBBLE X% OUT HI%,LO%
+ HI%=X%>>4:LO%=X% AND &hF
+END
+
+DEF NEXT_BYTE()
+ VAR V%=C% AND 3
+ V%=D%[C%>>2]>>(V%<<3) AND &hFF
+ INC C%
+ RETURN V%
+END
+
+DEF NEXT_WORD()
+ VAR V%=C% AND 3
+ IF V%==0 THEN
+  V%=D%[C%>>2] AND &hFFFF
+ ELSEIF V%==1 THEN
+  V%=D%[C%>>2]>>8 AND &hFFFF
+ ELSEIF V%==2 THEN
+  V%=D%[C%>>2]>>16 AND &hFFFF
+ ELSE
+  V%=(D%[C%>>2]>>24 AND &hFF) OR (D%[(C%>>2)+1]<<8 AND &hFF00)
+ ENDIF
+ INC C%,2
+ RETURN FLIP_ENDIAN(V%)
+END
+
+' Inefficient moment
+DEF FLIP_ENDIAN(X%)
+ RETURN (X% AND &hFF)<<8 OR (X% AND &hFF00)>>8
+END
+
+DEF NEXT_BLOCK
+ C%=((C%>>16)+1)<<16
+END
+
+' Reads and draws a complete frame.
+' Returns TRUE if there's still frames after this.
+DEF FRAME()
+ VAR DO_CLS,SET_PAL,INDEX
+ VAR I%
+ VAR VTX_N%
+ VAR TRI%[0]
+ 
+ HEADER OUT DO_CLS,SET_PAL,INDEX
+ 
+ IF DO_CLS THEN:GCLS ' -> only clears the 256x200 window
+ IF SET_PAL THEN:PALETTE
+ 
+ IF INDEX THEN
+  ' Frame is indexed, we first read a
+  ' bunch of vertices, and later we'll
+  ' index into them to draw them.
+  VTX_N%=NEXT_BYTE()
+  FOR I%=0 TO VTX_N%-1
+   VTX_X%[I%]=NEXT_BYTE()
+   VTX_Y%[I%]=NEXT_BYTE()
+  NEXT I%
+ ENDIF
+ 
+ WHILE 1
+  VAR COLOR_INDEX%
+  GET_NIBBLE NEXT_BYTE() OUT COLOR_INDEX%,VTX_N%
+  
+  ' If there's a special code...
+  IF COLOR_INDEX%==&hF THEN
+   IF VTX_N%==&hD THEN:RETURN FALSE ' -> done!
+   
+   IF VTX_N%==&hE THEN:NEXT_BLOCK:RETURN TRUE
+   IF VTX_N%==&hF THEN:RETURN TRUE ' -> more...
+  ENDIF
+  
+  EMPTY TRI%
+  EMPTY VTX_I%
+  
+  IF INDEX THEN
+   ' Frame is indexed, we only need to read
+   ' indices into the data we read before.
+   FOR I%=1 TO VTX_N%
+    PUSH VTX_I%,NEXT_BYTE()
+   NEXT I%
+  ELSE
+   ' Frame is immediate, we're going to read
+   ' each vertex and then draw them.
+   FOR I%=0 TO VTX_N%-1
+    VTX_X%[I%]=NEXT_BYTE()
+    VTX_Y%[I%]=NEXT_BYTE()
+    PUSH VTX_I%,I%
+   NEXT I%
+  ENDIF
+  
+  ' Convert polygon into triangles.
+  EAR_CLIP VTX_X%,VTX_Y%,VTX_I% OUT TRI%
+  
+  ' Draw those triangles!
+  GCOLOR PAL%[COLOR_INDEX%]
+  FOR I%=0 TO LEN(TRI%)-1 STEP 3
+   GTRI VTX_X%[TRI%[I%]],VTX_Y%[TRI%[I%]],VTX_X%[TRI%[I%+1]],VTX_Y%[TRI%[I%+1]],VTX_X%[TRI%[I%+2]],VTX_Y%[TRI%[I%+2]]
+  NEXT I%
+ WEND
+END
+
+' Reads a frame header.
+DEF HEADER OUT DO_CLS,SET_PAL,INDEX
+ VAR W%=NEXT_BYTE()
+ DO_CLS =W% AND &b001
+ SET_PAL=W% AND &b010
+ INDEX  =W% AND &b100
+END
+
+' Reads palette data and converts it to
+' SmileBASIC colors, for use with GCOLOR.
+DEF PALETTE
+ VAR MASK%=NEXT_WORD()
+ VAR I%
+ FOR I%=0 TO 15
+  IF (MASK%>>(15-I%)) AND 1 THEN
+   PAL%[I%]=ST_COLOR(NEXT_WORD())
+   ' FRESH_COLOR I%,PAL%[I%]
+  ENDIF
+ NEXT I%
+END
+
+' Converts an Atari ST RRR_GGG_BBB color to
+' SmileBASIC's RGB8 color values, for GCOLOR.
+DEF ST_COLOR(V%)
+ RETURN RGB(((V%>>8) AND 7)<<5,((V%>>4) AND 7)<<5,(V% AND 7)<<5)
+END
+
+' Consumes all you supply it with.
+DEF EAT I:END
+
+' Removes the element at index I from array X.
+DEF REMOVE X[],I%
+ WHILE I%<LEN(X)-1
+  X[I%]=X[I%+1]:INC I%
+ WEND
+ EAT POP(X)
+END
+
+' Empties the array X.
+DEF EMPTY X[]:WHILE LEN(X):EAT POP(X):WEND:END
+
+' Reverses the array X.
+DEF REVERSE X[]
+ VAR I%
+ FOR I%=0 TO (LEN(X) DIV 2)-1
+  SWAP X[I%],X[LEN(X)-I%-1]
+ NEXT I%
+END
+
+' Adapted from Avery's real old HSV function.
+DEF HSV(H#,S#,V#)
+ H#=(H#*10 MOD 3600)/600
+ VAR HR#=H#-FLOOR(H#) ' rising
+ VAR HF#=1-HR#        ' falling
+ V#=V#*255
+ 
+ VAR R#,G#,B#
+ IF FALSE THEN
+ ELSEIF H#>=5 THEN R#=0  :G#=1  :B#=HR#
+ ELSEIF H#>=4 THEN R#=HF#:G#=1  :B#=0
+ ELSEIF H#>=3 THEN R#=1  :G#=HR#:B#=0
+ ELSEIF H#>=2 THEN R#=1  :G#=0  :B#=HF#
+ ELSEIF H#>=1 THEN R#=HR#:G#=0  :B#=1
+ ELSE              R#=0  :G#=HF#:B#=1
+ ENDIF
+ 
+ RETURN RGB((1-R#*S#)*V#,(1-G#*S#)*V#,(1-B#*S#)*V#)
+END

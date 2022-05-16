@@ -1,0 +1,176 @@
+OPTION STRICT
+OPTION DEFINT
+
+' Ear Clipping Algorithm
+' without vector unpacking overhead
+
+' The Real Algorithm
+
+' Checks if a point P is inside the triangle ABC.
+' This is probably a reasonable implementation.
+COMMON DEF POINT_IN_TRIANGLE(PX%,PY%,AX%,AY%,BX%,BY%,CX%,CY%)
+ IF SGN(V_CROSS(BX%-AX%,BY%-AY%,PX%-AX%,PY%-AY%)+1e-2)-1 THEN:RETURN FALSE
+ IF SGN(V_CROSS(CX%-BX%,CY%-BY%,PX%-BX%,PY%-BY%)+1e-2)-1 THEN:RETURN FALSE
+ IF SGN(V_CROSS(AX%-CX%,AY%-CY%,PX%-CX%,PY%-CY%)+1e-2)-1 THEN:RETURN FALSE
+ RETURN TRUE
+END
+
+' Returns the winding order. Typically you only
+' need the sign of this (-1=CW, 1=CCW, 0=WTF)
+' but.. if you want the whole result, here ya go.
+COMMON DEF WINDING_ORDER(VTX_X%[],VTX_Y%[],T_IDX%[])
+ VAR I%
+ VAR R#=0
+ 
+ VAR PREV_I%=LEN(T_IDX%)-1
+ IF PREV_I%>1 THEN
+  FOR I%=0 TO LEN(T_IDX%)-1
+   INC R#,(VTX_X%[T_IDX%[I%]]-VTX_X%[T_IDX%[PREV_I%]])*(VTX_Y%[T_IDX%[I%]]+VTX_Y%[T_IDX%[PREV_I%]])
+   PREV_I%=I%
+  NEXT I%
+ ENDIF
+ 
+ RETURN R#
+END
+
+COMMON DEF IS_EAR(VTX_X%,VTX_Y%,T_IDX%,IP%,IC%,IN%)
+ VAR VP_X%=VTX_X%[IP%]
+ VAR VP_Y%=VTX_Y%[IP%]
+ 
+ VAR VC_X%=VTX_X%[IC%]
+ VAR VC_Y%=VTX_Y%[IC%]
+ 
+ VAR VN_X%=VTX_X%[IN%]
+ VAR VN_Y%=VTX_Y%[IN%]
+ 
+ VAR J%,IJ%
+ FOR J%=0 TO LEN(T_IDX%)-1
+  IJ%=T_IDX%[J%]
+  IF IJ%==IP% || IJ%==IC% || IJ%==IN% THEN:CONTINUE
+  IF POINT_IN_TRIANGLE(VTX_X%[IJ%],VTX_Y%[IJ%],VP_X%,VP_Y%,VC_X%,VC_Y%,VN_X%,VN_Y%) THEN
+   RETURN FALSE
+  ENDIF
+ NEXT J%
+ 
+ RETURN TRUE
+END
+
+' Does the "ear clipping" algorithm
+' on your vertices.
+' Shameless "adaptation" of
+' github/twobitcoder101/Polygon-Triangulation
+COMMON DEF EAR_CLIP(VTX_X%[],VTX_Y%[],T_IDX%[])
+ 
+ VAR I%,J%
+ VAR TRI%[0] ' Return value
+ 'VAR T_IDX%[0] ' Triangle Indexes
+ 
+ IF WINDING_ORDER(VTX_X%,VTX_Y%,T_IDX%)>0 THEN
+  REVERSE T_IDX%
+ ENDIF
+ 
+ VAR PROGRESSED
+ 
+ WHILE LEN(T_IDX%)>3
+  PROGRESSED=FALSE
+  
+  VAR PREV_I%=LEN(T_IDX%)-1
+  VAR NEXT_I%
+  FOR I%=0 TO LEN(T_IDX%)-1
+   NEXT_I%=(I%+1) MOD LEN(T_IDX%)
+   
+   VAR IP%=T_IDX%[PREV_I%]
+   VAR IC%=T_IDX%[I%]
+   VAR IN%=T_IDX%[NEXT_I%]
+   
+   PREV_I%=I%
+   
+   ' Vectors
+   
+   VAR VP_X%=VTX_X%[IP%]
+   VAR VP_Y%=VTX_Y%[IP%]
+   
+   VAR VC_X%=VTX_X%[IC%]
+   VAR VC_Y%=VTX_Y%[IC%]
+   
+   VAR VN_X%=VTX_X%[IN%]
+   VAR VN_Y%=VTX_Y%[IN%]
+   
+   ' Temporary
+   
+   VAR C2P_X%=VP_X%-VC_X%
+   VAR C2P_Y%=VP_Y%-VC_Y%
+   
+   VAR C2N_X%=VN_X%-VC_X%
+   VAR C2N_Y%=VN_Y%-VC_Y%
+   
+   VAR CROSS%=SGN(V_CROSS(C2P_X%,C2P_Y%,C2N_X%,C2N_Y%))
+   
+   ' Is this vertex concave?
+   ' If so, skip it.
+   IF CROSS%>0 THEN:CONTINUE
+   
+   ' Is this vertex a straight line?
+   ' If so, merge it.
+   IF CROSS%==0 THEN
+    REMOVE T_IDX%,I%
+    
+    PROGRESSED=TRUE:BREAK
+   ENDIF
+   
+   IF IS_EAR(VTX_X%,VTX_Y%,T_IDX%,IP%,IC%,IN%) THEN
+    PUSH TRI%,IP%
+    PUSH TRI%,IC%
+    PUSH TRI%,IN%
+    REMOVE T_IDX%,I%
+    
+    PROGRESSED=TRUE:BREAK
+   ENDIF
+  NEXT I%
+  
+  IF !PROGRESSED THEN
+   ' Panic Condition
+   EMPTY T_IDX%
+   BREAK
+  ENDIF
+ WEND
+ 
+ WHILE LEN(T_IDX%)
+  PUSH TRI%,SHIFT(T_IDX%)
+ WEND
+ 
+ RETURN TRI%
+END
+
+' Utility
+
+' Consumes all you supply it with.
+DEF EAT I:END
+
+' Removes the element at index I from array X.
+DEF REMOVE X[],I%
+ WHILE I%<LEN(X)-1
+  X[I%]=X[I%+1]:INC I%
+ WEND
+ EAT POP(X)
+END
+
+' Empties the array X.
+DEF EMPTY X[]:WHILE LEN(X):EAT POP(X):WEND:END
+
+' Reverses the array X.
+DEF REVERSE X[]
+ VAR I%
+ FOR I%=0 TO (LEN(X) DIV 2)-1
+  SWAP X[I%],X[LEN(X)-I%-1]
+ NEXT I%
+END
+
+' Extremely Bad Vector Standard Library
+
+DEF V_LEN(X%,Y%)
+ RETURN SQR(X%*X%+Y%*Y%)
+END
+DEF V_CROSS(AX%,AY%,BX%,BY%)
+ RETURN (AX%*BY%)-(AY%*BX%)
+END
